@@ -144,6 +144,9 @@ class Scanner:
                 plugin_cls = self._plugin_classes.get(plugin_name)
                 if not plugin_cls:
                     continue
+                cond = self.router.CONDITIONS.get(plugin_name)
+                if cond and not cond(self.state):
+                    continue
                 if not self._check_plugin_tools(plugin_cls):
                     continue
                 try:
@@ -231,6 +234,25 @@ class Scanner:
         if not required:
             return True
         return all(self.resource.check_tool_available(t) for t in required)
+
+    def close(self):
+        """Cleanly close scanner resources."""
+        if hasattr(self, "stream") and self.stream:
+            try:
+                self.stream.close()
+            except Exception:
+                pass
+        if hasattr(self, "state") and self.state:
+            try:
+                self.state.close()
+            except Exception:
+                pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
 
     def summary(self) -> dict:
         return self.state.summary()

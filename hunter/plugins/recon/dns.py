@@ -43,6 +43,7 @@ class DNSPlugin(Plugin):
                 resolved_hosts.append(host)
         
         self.state.set_state(self.name, "resolved", resolved_hosts)
+        self.state.set_state(self.name, "raw_records", resolved)
         self.state.set_state(self.name, "ips", sorted(ips))
         self.state.set_state(self.name, "resolved_count", len(resolved_hosts))
         self.log(f"Resolved: {len(resolved_hosts)} hosts, {len(ips)} unique IPs")

@@ -68,15 +68,22 @@ class ResourceManager:
             return Budget(threads=threads, delay=0, max_concurrent_tools=3)
 
     def check_tool_available(self, tool: str) -> bool:
-        """Check if a tool binary exists in PATH."""
-        try:
-            result = subprocess.run(
-                ["which", tool],
-                capture_output=True, text=True, timeout=5
-            )
-            return result.returncode == 0
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            return False
+        """Check if a tool binary exists in PATH or WSL."""
+        import shutil
+        if shutil.which(tool) is not None:
+            return True
+        # If on Windows, check if available inside WSL
+        if os.name == "nt":
+            try:
+                res = subprocess.run(
+                    ["wsl", "which", tool],
+                    capture_output=True, text=True, timeout=3
+                )
+                if res.returncode == 0 and res.stdout.strip():
+                    return True
+            except Exception:
+                pass
+        return False
 
     def get_available_tools(self) -> dict[str, bool]:
         """Check availability of all required tools."""

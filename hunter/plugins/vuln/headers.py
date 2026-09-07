@@ -1,4 +1,5 @@
 """Security header analysis."""
+import urllib.request
 from .. import Plugin, Budget
 
 
@@ -25,30 +26,42 @@ class HeaderPlugin(Plugin):
             return self.state
 
         targets = live_urls[:50]
-        self.log(f"Analyzing headers on {len(targets)} hosts...")
+        self.log(f"Analyzing headers on {len(targets)} hosts concurrently...")
 
+        def analyze_host(url):
+            missing_local = []
+            info_local = []
+            host = url.split("/")[2] if "/" in url else url
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "Hunter/3.0"})
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    resp_headers = {k.lower(): v for k, v in resp.headers.items()}
+                    for header in self.SECURITY_HEADERS:
+                        if header.lower() not in resp_headers:
+                            missing_local.append(f"{host} | Missing: {header}")
+                    for header in self.INFO_HEADERS:
+                        if header.lower() in resp_headers:
+                            info_local.append(f"{host} | {header}: {resp_headers[header.lower()]}")
+            except Exception:
+                # Fallback to curl
+                out = self.run_tool(["curl", "-sI", "--max-time", "5", url], timeout=8)
+                if out:
+                    lines = out.lower().splitlines()
+                    for header in self.SECURITY_HEADERS:
+                        if not any(header.lower() in line for line in lines):
+                            missing_local.append(f"{host} | Missing: {header}")
+                    for header in self.INFO_HEADERS:
+                        for line in lines:
+                            if line.startswith(header.lower()):
+                                info_local.append(f"{host} | {line.strip()}")
+            return (missing_local, info_local)
+
+        results = self.probe_urls_concurrent(targets, analyze_host, max_workers=15)
         missing = []
         info_disclosure = []
-
-        for url in targets:
-            out = self.run_tool(["curl", "-sI", "-L", "--max-time", "5", url], timeout=10)
-            if not out:
-                continue
-
-            lines = out.lower().splitlines()
-            host = url.split("/")[2] if "/" in url else url
-
-            # Check missing security headers
-            for header in self.SECURITY_HEADERS:
-                found = any(header.lower() in line for line in lines)
-                if not found:
-                    missing.append(f"{host} | Missing: {header}")
-
-            # Check info disclosure
-            for header in self.INFO_HEADERS:
-                for line in lines:
-                    if line.startswith(header.lower()):
-                        info_disclosure.append(f"{host} | {line.strip()}")
+        for m_list, i_list in results:
+            missing.extend(m_list)
+            info_disclosure.extend(i_list)
 
         # Deduplicate
         missing = sorted(set(missing))

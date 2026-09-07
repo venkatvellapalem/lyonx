@@ -2,6 +2,13 @@
 import sys
 import os
 
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 # Add parent to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -99,9 +106,11 @@ if __name__ == "__main__":
     for test in tests:
         try:
             test()
-            print(f"  ✓ {test.__name__}")
+            print(f"  [+] {test.__name__}")
             passed += 1
         except Exception as e:
-            print(f"  ✗ {test.__name__}: {e}")
+            print(f"  [-] {test.__name__}: {e}")
             failed += 1
     print(f"\n  {passed} passed, {failed} failed")
+    if failed > 0:
+        sys.exit(1)

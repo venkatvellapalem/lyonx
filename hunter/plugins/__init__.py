@@ -58,10 +58,15 @@ class Plugin(ABC):
         Returns:
             stdout string
         """
+        import os
         timeout = timeout or self.config.timeout
+        exec_cmd = list(cmd)
+        if os.name == "nt" and shutil.which(exec_cmd[0]) is None:
+            if hasattr(self, "resource") and self.resource and self.resource.check_tool_available(exec_cmd[0]):
+                exec_cmd = ["wsl"] + exec_cmd
         try:
             result = subprocess.run(
-                cmd,
+                exec_cmd,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -129,7 +134,29 @@ class Plugin(ABC):
 
     def tool_available(self, tool: str) -> bool:
         """Check if a tool is available."""
+        if hasattr(self, "resource") and self.resource:
+            return self.resource.check_tool_available(tool)
         return shutil.which(tool) is not None
+
+    def probe_urls_concurrent(self, items: list, test_func, max_workers: int = 15) -> list:
+        """Execute test_func concurrently across items instead of sequential loops."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        results = []
+        if not items:
+            return results
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(items))) as executor:
+            futures = {executor.submit(test_func, item): item for item in items}
+            for future in as_completed(futures):
+                try:
+                    res = future.result()
+                    if res:
+                        if isinstance(res, list):
+                            results.extend(res)
+                        else:
+                            results.append(res)
+                except Exception:
+                    pass
+        return results
 
     def progress(self, current: int, total: int, label: str = ""):
         """Print progress update."""

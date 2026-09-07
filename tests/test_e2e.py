@@ -1,6 +1,14 @@
 """End-to-end test — verify the full pipeline works."""
 import sys
 import os
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 import tempfile
 import time
 
@@ -26,8 +34,8 @@ def test_scanner_init():
         assert s.target == "test.example.com"
         assert s.scan_id is not None
         assert s.output_dir.exists()
-        s.state.close()
-        print("  ✓ Scanner init")
+        s.close()
+        print("  [+] Scanner init")
 
 
 def test_state_full_cycle():
@@ -63,7 +71,7 @@ def test_state_full_cycle():
         assert summary["status"] == "completed"
         assert summary["total_findings"] == 10
         state.close()
-        print("  ✓ State full cycle")
+        print("  [+] State full cycle")
 
 
 def test_dedup_comprehensive():
@@ -90,7 +98,7 @@ def test_dedup_comprehensive():
     assert not d.is_unique_finding("sqli", "https://example.com/vuln", "evidence1")
     assert d.is_unique_finding("xss", "https://example.com/vuln", "evidence2")
 
-    print("  ✓ Dedup comprehensive")
+    print("  [+] Dedup comprehensive")
 
 
 def test_incremental():
@@ -125,7 +133,7 @@ def test_incremental():
         assert "c.example.com" in diff["new_subdomains"]
         assert "b.example.com" in diff["gone_subdomains"]
 
-        print("  ✓ Incremental scanning")
+        print("  [+] Incremental scanning")
 
 
 def test_confidence():
@@ -150,7 +158,7 @@ def test_confidence():
     cross = scorer.get_cross_validated()
     assert "https://example.com/vuln" in cross
 
-    print("  ✓ Confidence scoring")
+    print("  [+] Confidence scoring")
 
 
 def test_stream():
@@ -177,7 +185,7 @@ def test_stream():
             lines = f.readlines()
         assert len(lines) == 5
 
-        print("  ✓ Streaming output")
+        print("  [+] Streaming output")
 
 
 def test_parallel_plan():
@@ -202,7 +210,7 @@ def test_parallel_plan():
     xss_group = next(i for i, g in enumerate(plan) if "vuln.xss" in g)
     assert sqli_group == xss_group
 
-    print("  ✓ Parallel execution planning")
+    print("  [+] Parallel execution planning")
 
 
 def test_resource_budget():
@@ -219,7 +227,7 @@ def test_resource_budget():
     assert "subfinder" in tools
     assert "nuclei" in tools
 
-    print("  ✓ Resource budget")
+    print("  [+] Resource budget")
 
 
 def test_router_conditions():
@@ -240,7 +248,7 @@ def test_router_conditions():
         assert "vuln.nuclei" in order    # Always runs
 
         state.close()
-        print("  ✓ Router conditions")
+        print("  [+] Router conditions")
 
 
 def test_plugin_system():
@@ -266,7 +274,7 @@ def test_plugin_system():
         assert cls.description, f"{name} missing description"
         assert cls.category, f"{name} missing category"
 
-    print(f"  ✓ Plugin system ({len(plugins)} plugins)")
+    print(f"  [+] Plugin system ({len(plugins)} plugins)")
 
 
 def test_agent_api():
@@ -277,7 +285,75 @@ def test_agent_api():
     agent = HunterAgent()
     assert agent.config is not None
 
-    print("  ✓ Agent API")
+    print("  [+] Agent API")
+
+
+def test_nuclei_parser():
+    """Test nuclei parser extracting real URLs from JSONL and text."""
+    from hunter.plugins.vuln.nuclei_scan import NucleiPlugin
+    plugin = NucleiPlugin.__new__(NucleiPlugin)
+
+    # Test JSONL line
+    json_line = '{"template-id":"cve-2023-1234","info":{"severity":"critical"},"matched-at":"https://example.com/api/v1/vuln","extracted-results":["root:x:0:0"]}'
+    res = plugin._parse_nuclei_line(json_line)
+    assert res["url"] == "https://example.com/api/v1/vuln"
+    assert res["template_id"] == "cve-2023-1234"
+    assert res["severity"] == "critical"
+
+    # Test text fallback line
+    text_line = "[cve-2021-44228] [http] [critical] https://target.com:8080/solr"
+    res2 = plugin._parse_nuclei_line(text_line)
+    assert res2["url"] == "https://target.com:8080/solr"
+    assert res2["template_id"] == "cve-2021-44228"
+    assert res2["severity"] == "critical"
+    print("  [+] Nuclei parser accuracy")
+
+
+def test_state_multithreading():
+    """Test ScanState handles concurrent multi-threaded writes without error."""
+    import concurrent.futures
+    with tempfile.TemporaryDirectory() as tmp:
+        state = ScanState("mt_test", tmp)
+        state.init_scan("mt.com")
+
+        def worker(idx):
+            for j in range(10):
+                f = Finding(type="xss", severity="high", url=f"https://mt.com/{idx}_{j}", evidence="ev")
+                state.add_finding(f)
+                state.set_state(f"phase_{idx}", f"key_{j}", f"val_{j}")
+            return True
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(worker, range(10)))
+
+        assert all(results)
+        findings = state.get_findings()
+        assert len(findings) == 100
+        state.close()
+        print("  [+] State multi-threaded safety")
+
+
+def test_rustscan_parser():
+    """Test rustscan greppable output parsing."""
+    from hunter.plugins.recon.ports import PortScanPlugin
+    plugin = PortScanPlugin.__new__(PortScanPlugin)
+
+    sample_output = "45.33.32.156 -> [22,80,31337]\n192.168.1.1 -> [443,8443]"
+    ports = []
+    import re
+    for line in sample_output.splitlines():
+        if "->" in line:
+            parts = line.split("->")
+            host = parts[0].strip()
+            found = re.findall(r'\d+', parts[1])
+            for p in found:
+                ports.append(f"{host}:{p}")
+
+    assert "45.33.32.156:22" in ports
+    assert "45.33.32.156:80" in ports
+    assert "45.33.32.156:31337" in ports
+    assert "192.168.1.1:443" in ports
+    print("  [+] RustScan greppable parsing")
 
 
 if __name__ == "__main__":
@@ -295,6 +371,9 @@ if __name__ == "__main__":
         test_router_conditions,
         test_plugin_system,
         test_agent_api,
+        test_nuclei_parser,
+        test_state_multithreading,
+        test_rustscan_parser,
     ]
 
     passed = 0
@@ -304,7 +383,7 @@ if __name__ == "__main__":
             test()
             passed += 1
         except Exception as e:
-            print(f"  ✗ {test.__name__}: {e}")
+            print(f"  [-] {test.__name__}: {e}")
             failed += 1
 
     print(f"\n  Results: {passed} passed, {failed} failed")

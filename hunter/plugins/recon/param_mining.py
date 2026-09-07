@@ -26,20 +26,31 @@ class ParamMiningPlugin(Plugin):
 
         self.log(f"Mining parameters from {len(param_urls)} URLs...")
 
-        # Use ParamSpider if available
-        extra_params = []
+        # Use Arjun if available
+        extra_param_urls = []
         if self.tool_available("arjun"):
-            import sqlite3
-            conn = sqlite3.connect(str(self.state.db_path))
-            conn.row_factory = sqlite3.Row
-            row = conn.execute("SELECT target FROM scans WHERE id = ?", (self.state.scan_id,)).fetchone()
-            target = row["target"] if row else ""
-            conn.close()
+            target = self.state.summary().get("target") or ""
+            if target:
+                self.log("Running Arjun for hidden parameter discovery...")
+                arjun_out = str(self.output_dir / "arjun.json")
+                out = self.run_tool(["arjun", "-u", f"https://{target}", "--stable", "-oJ", arjun_out], timeout=120)
+                arjun_file = Path(arjun_out)
+                if arjun_file.exists():
+                    try:
+                        import json
+                        arjun_data = json.loads(arjun_file.read_text())
+                        if isinstance(arjun_data, dict):
+                            for u, p_list in arjun_data.items():
+                                for p in p_list:
+                                    extra_param_urls.append(f"{u}{'&' if '?' in u else '?'}{p}=1")
+                        elif isinstance(arjun_data, list):
+                            for p in arjun_data:
+                                extra_param_urls.append(f"https://{target}/?{p}=1")
+                        self.log(f"Arjun discovered {len(extra_param_urls)} extra parameter endpoints")
+                    except Exception as e:
+                        self.log(f"Error parsing arjun.json: {e}", "warn")
 
-            self.log("Running Arjun for hidden parameter discovery...")
-            out = self.run_tool(["arjun", "-u", f"https://{target}", "--stable", "-oJ", str(self.output_dir / "arjun.json")], timeout=120)
-            if out:
-                self.log("Arjun completed")
+        all_candidate_urls = list(set(param_urls + extra_param_urls))
 
         # Analyze parameters
         param_freq = {}
@@ -47,7 +58,7 @@ class ParamMiningPlugin(Plugin):
         redirect_urls = []
         interesting_urls = []
 
-        for url in param_urls:
+        for url in all_candidate_urls:
             try:
                 parsed = urlparse(url)
                 params = parse_qs(parsed.query, keep_blank_values=False)

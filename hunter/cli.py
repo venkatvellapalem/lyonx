@@ -34,16 +34,11 @@ def scan(target, threads, depth, phases, skip, aggressive, config, output, json_
     cfg.aggressive = aggressive
     if skip:
         cfg.skip_phases = [s.strip() for s in skip.split(",")]
-
     phase_list = [p.strip() for p in phases.split(",")] if phases else None
-
     scanner = Scanner(target, config=cfg, output_dir=output)
     state = scanner.scan(phases=phase_list, resume=resume)
-
     if json_out:
-        summary = state.summary()
-        findings = [f.__dict__ for f in state.get_findings()]
-        click.echo(json.dumps({"summary": summary, "findings": findings}, indent=2))
+        click.echo(json.dumps({"summary": state.summary(), "findings": [f.__dict__ for f in state.get_findings()]}, indent=2))
     state.close()
 
 
@@ -65,8 +60,8 @@ def resume(scan_id, json_out):
 
 @cli.command()
 @click.argument("target")
-@click.option("--interval", "-i", default="6h", help="Interval (e.g. 6h, 1d)")
-@click.option("--webhook", "-w", default=None, help="Webhook URL")
+@click.option("--interval", "-i", default="6h")
+@click.option("--webhook", "-w", default=None)
 @click.option("--threads", "-t", default=25)
 def watch(target, interval, webhook, threads):
     """Continuously monitor target."""
@@ -77,7 +72,6 @@ def watch(target, interval, webhook, threads):
         if s.endswith("d"): return int(s[:-1]) * 86400
         if s.endswith("m"): return int(s[:-1]) * 60
         return int(s)
-
     interval_sec = parse_interval(interval)
     cfg = Config(threads=threads, webhook=webhook)
     click.echo(f"  [hunter] Watching {target} every {interval}")
@@ -186,8 +180,8 @@ def payloads(vuln_type):
 def agent(target, compact, json_out):
     """Agent-optimized scan with minimal token output."""
     from .agent.api import HunterAgent
-    agent = HunterAgent()
-    results = agent.scan(target)
+    a = HunterAgent()
+    results = a.scan(target)
     if compact:
         click.echo(results.to_one_line())
     elif json_out:
@@ -200,14 +194,14 @@ def agent(target, compact, json_out):
         actions = results.action_items()
         if actions:
             click.echo(f"\n  Action Items ({len(actions)}):\n")
-            for a in actions[:20]:
-                click.echo(f"    {a}")
+            for act in actions[:20]:
+                click.echo(f"    {act}")
 
 
 @cli.command()
-@click.option("--list", "list_skills", is_flag=True, help="List all skills")
-@click.option("--top", default=10, help="Show top N skills")
-@click.option("--json-out", is_flag=True, help="JSON output")
+@click.option("--list", "list_skills", is_flag=True)
+@click.option("--top", default=10)
+@click.option("--json-out", is_flag=True)
 def skills(list_skills, top, json_out):
     """Manage learned attack skills."""
     from .core.skills import SkillDB
@@ -229,7 +223,7 @@ def skills(list_skills, top, json_out):
 
 @cli.command()
 @click.argument("vuln_type", required=False)
-@click.option("--test-all", is_flag=True, help="Test all vuln types")
+@click.option("--test-all", is_flag=True)
 def sandbox(vuln_type, test_all):
     """Test payloads in the local sandbox."""
     from .core.sandbox import Sandbox
@@ -243,10 +237,10 @@ def sandbox(vuln_type, test_all):
                 icon = "✓" if result["vulnerable"] else "✗"
                 click.echo(f"    {icon} {vt:12s} vulnerable={result['vulnerable']} evidence={result.get('evidence', '')}")
         elif vuln_type:
-            payloads = Payloads.get(vuln_type)
-            if payloads:
-                click.echo(f"\n  Testing {len(payloads)} {vuln_type} payloads:\n")
-                for p in payloads[:10]:
+            items = Payloads.get(vuln_type)
+            if items:
+                click.echo(f"\n  Testing {len(items)} {vuln_type} payloads:\n")
+                for p in items[:10]:
                     param = "id" if vuln_type == "sqli" else "q"
                     result = sb.test(vuln_type, {param: p})
                     icon = "✓" if result["vulnerable"] else "✗"
@@ -255,3 +249,112 @@ def sandbox(vuln_type, test_all):
                 click.echo(f"  Unknown type: {vuln_type}")
         else:
             click.echo("  Usage: hunter sandbox sqli\n         hunter sandbox --test-all")
+
+
+@cli.command()
+@click.argument("url", required=False)
+@click.option("--method", "method", default="GET")
+@click.option("--header", "-H", multiple=True)
+@click.option("--body", "-d", default=None)
+@click.option("--raw", default=None)
+@click.option("--json-out", is_flag=True)
+def repeater(url, method, header, body, raw, json_out):
+    """Send HTTP requests — like Burp Repeater."""
+    from .core.repeater import Repeater
+    r = Repeater()
+    headers = {}
+    for h in header:
+        k, v = h.split(":", 1)
+        headers[k.strip()] = v.strip()
+    if raw:
+        resp = r.send_raw(raw)
+    elif url:
+        resp = r.send(method, url, headers or None, body)
+    else:
+        click.echo("  Usage: hunter repeater GET https://example.com")
+        return
+    if json_out:
+        click.echo(json.dumps(resp.to_dict(), indent=2))
+    else:
+        click.echo(f"\n  {resp.status} {resp.url}")
+        click.echo(f"  Size: {resp.size} bytes | Time: {resp.time:.3f}s")
+        click.echo(f"\n  Response:\n")
+        click.echo(resp.body[:2000])
+
+
+@cli.command()
+@click.argument("tokens_file", required=False)
+@click.option("--stdin", is_flag=True)
+@click.option("--json-out", is_flag=True)
+def sequencer(tokens_file, stdin, json_out):
+    """Analyze token randomness — like Burp Sequencer."""
+    from .core.sequencer import Sequencer
+    tokens = []
+    if stdin:
+        tokens = [l.strip() for l in sys.stdin if l.strip()]
+    elif tokens_file:
+        with open(tokens_file) as f:
+            tokens = [l.strip() for l in f if l.strip()]
+    else:
+        click.echo("  Usage: hunter sequencer tokens.txt")
+        return
+    s = Sequencer()
+    result = s.analyze(tokens)
+    if json_out:
+        click.echo(json.dumps(result, indent=2))
+    else:
+        click.echo(f"\n  Token Analysis ({result['count']} tokens):")
+        click.echo(f"  {'='*40}")
+        click.echo(f"  Length:     {result['min_length']}-{result['max_length']} (avg {result['avg_length']})")
+        click.echo(f"  Unique:     {result['unique_count']}/{result['count']} ({result['uniqueness_ratio']:.1%})")
+        click.echo(f"  Entropy:    {result['entropy_per_char']:.3f} bits/char")
+        click.echo(f"  Total:      {result['total_entropy']:.2f} bits")
+        click.echo(f"  Verdict:    {result['verdict']}")
+        if result.get('issues'):
+            click.echo(f"\n  Issues:")
+            for issue in result['issues']:
+                click.echo(f"    ⚠ {issue}")
+
+
+@cli.command()
+@click.argument("data", required=False)
+@click.option("--encode", "enc", default=None)
+@click.option("--decode", "dec", default=None)
+@click.option("--hash", "hash_algo", default=None)
+@click.option("--transform", default=None)
+@click.option("--detect", is_flag=True)
+@click.option("--jwt", is_flag=True)
+@click.option("--all", "all_enc", is_flag=True)
+def decoder(data, enc, dec, hash_algo, transform, detect, jwt, all_enc):
+    """Encode/decode data — like Burp Decoder."""
+    from .core.decoder import Decoder
+    if not data:
+        data = sys.stdin.read().strip()
+    if not data:
+        click.echo("  Usage: hunter decoder 'hello' --encode base64")
+        return
+    d = Decoder()
+    if jwt:
+        click.echo(json.dumps(d.jwt_decode(data), indent=2))
+    elif detect:
+        possible = d.detect(data)
+        click.echo(f"  Detected: {', '.join(possible) if possible else 'Unknown'}")
+    elif all_enc:
+        click.echo(f"\n  Encodings:")
+        for k, v in d.all_encode(data).items():
+            click.echo(f"    {k:12s} {v}")
+        click.echo(f"\n  Hashes:")
+        for k, v in d.all_hash(data).items():
+            click.echo(f"    {k:12s} {v}")
+    elif enc:
+        click.echo(d.encode(data, enc))
+    elif dec:
+        click.echo(d.decode(data, dec))
+    elif hash_algo:
+        click.echo(d.hash(data, hash_algo))
+    elif transform:
+        click.echo(d.transform(data, transform))
+    else:
+        click.echo(f"  Encodings: {', '.join(d.ENCODINGS)}")
+        click.echo(f"  Hashes:    {', '.join(d.HASHES)}")
+        click.echo(f"  Transforms:{', '.join(d.TRANSFORMS)}")

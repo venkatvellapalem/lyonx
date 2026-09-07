@@ -50,9 +50,12 @@ class StreamOutput:
 
         line = json.dumps(event, default=str)
 
-        if self._fh:
-            self._fh.write(line + "\n")
-            self._fh.flush()
+        if self._fh and not getattr(self._fh, "closed", False):
+            try:
+                self._fh.write(line + "\n")
+                self._fh.flush()
+            except Exception:
+                pass
 
         if self.stdout:
             print(line, file=sys.stdout)
@@ -128,8 +131,13 @@ class StreamOutput:
     def close(self):
         """Close the stream."""
         if self._fh:
-            self._fh.close()
-            self._fh = None
+            try:
+                self._fh.flush()
+                self._fh.close()
+            except Exception:
+                pass
+            finally:
+                self._fh = None
 
     def __enter__(self):
         return self

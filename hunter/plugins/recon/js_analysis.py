@@ -29,9 +29,20 @@ class JSAnalysisPlugin(Plugin):
         url_pattern = re.compile(r'https?://[^\s"\'`\'`]+')
         param_url_pattern = re.compile(r'https?://[^\s"\'`\'`]+\?[^\s"\'`\'`]+')
 
-        for i, js_url in enumerate(js_urls[:100]):
-            self.progress(i, len(js_urls), "JS files")
-            content = self.run_tool(["curl", "-sL", "--max-time", "10", js_url], timeout=15)
+        def fetch_js(url):
+            try:
+                import urllib.request
+                req = urllib.request.Request(url, headers={"User-Agent": "Hunter/3.0"})
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    return (url, resp.read().decode("utf-8", errors="ignore"))
+            except Exception:
+                # Fallback to run_tool
+                txt = self.run_tool(["curl", "-sL", "--max-time", "10", url], timeout=12)
+                return (url, txt)
+
+        js_results = self.probe_urls_concurrent(js_urls[:100], fetch_js, max_workers=10)
+
+        for js_url, content in js_results:
             if not content:
                 continue
 
@@ -62,7 +73,11 @@ class JSAnalysisPlugin(Plugin):
 
         # Report secrets as findings
         for secret in secrets:
-            self.add_finding("secret_exposure", "high", secret.split(":")[0], secret)
+            if ": " in secret:
+                source_url, snippet = secret.split(": ", 1)
+            else:
+                source_url, snippet = js_url, secret
+            self.add_finding("secret_exposure", "high", source_url, snippet)
 
         self.state.set_state(self.name, "secrets", secrets)
         self.state.set_state(self.name, "endpoints", endpoints)

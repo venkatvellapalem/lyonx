@@ -1,4 +1,6 @@
 """XSS scanning with dalfox."""
+import json
+import re
 from .. import Plugin, Budget
 
 
@@ -20,18 +22,30 @@ class XSSPlugin(Plugin):
         input_data = "\n".join(targets)
         out = self.run_pipe(input_data, [
             "dalfox", "pipe", "--silence", "--skip-bav",
-            "-o", str(self.output_dir / "xss_findings.txt")
+            "--format", "json",
+            "-o", str(self.output_dir / "xss_findings.json")
         ], timeout=600)
 
         findings = [l.strip() for l in out.splitlines() if l.strip()] if out else []
-        
-        # Read the output file if pipe didn't capture
         if not findings:
-            findings = self.file_lines(str(self.output_dir / "xss_findings.txt"))
+            findings = self.file_lines(str(self.output_dir / "xss_findings.json"))
 
         for f in findings:
-            self.add_finding("xss", "high", f.split()[0] if f.split() else "", f)
+            url = ""
+            evidence = f
+            try:
+                data = json.loads(f)
+                url = data.get("url") or data.get("data", "")
+                param = data.get("param", "")
+                evidence = f"Param: {param} | Payload: {data.get('payload', '')}"
+            except (json.JSONDecodeError, TypeError):
+                url_match = re.search(r'https?://[^\s]+', f)
+                url = url_match.group(0) if url_match else ""
 
+            if url:
+                self.add_finding("xss", "high", url, evidence)
+
+        self.save_lines(findings, str(self.output_dir / "xss_findings.txt"))
         self.state.set_state(self.name, "findings", findings)
         self.log(f"XSS findings: {len(findings)}")
         return self.state

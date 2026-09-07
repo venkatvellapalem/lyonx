@@ -54,11 +54,24 @@ class Config:
     def to_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items() if not k.startswith("_")}
 
+    DEFAULT_DISCOVERY_WORDS = [
+        "admin", "api", "v1", "v2", "v3", "login", "dashboard", "auth",
+        "user", "users", "register", "signup", "settings", "profile",
+        "test", "dev", "staging", "demo", "beta", "backup", "bak", "old",
+        "config", "secrets", "env", "git", "swagger", "docs", "graphql",
+        "robots.txt", "sitemap.xml", ".env", "console", "portal", "internal",
+    ]
+
     def get_wordlist(self, name: str = "common") -> str:
-        """Get path to a wordlist."""
-        if self.wordlist:
+        """Get path to a wordlist, creating a default one if missing."""
+        if self.wordlist and Path(self.wordlist).exists():
             return self.wordlist
         wl_path = Path(self.wordlist_dir) / "discovery" / f"{name}.txt"
         if wl_path.exists():
             return str(wl_path)
-        return None
+        try:
+            wl_path.parent.mkdir(parents=True, exist_ok=True)
+            wl_path.write_text("\n".join(self.DEFAULT_DISCOVERY_WORDS) + "\n")
+            return str(wl_path)
+        except Exception:
+            return None
