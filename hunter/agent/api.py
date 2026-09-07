@@ -1,13 +1,4 @@
-"""Agent API — programmatic interface for AI agents.
-
-Usage:
-    from hunter.agent.api import HunterAgent
-    
-    agent = HunterAgent()
-    results = agent.scan("example.com")
-    print(results.findings)
-    print(results.summary)
-"""
+"""Agent API — programmatic interface for AI agents."""
 import json
 import time
 from dataclasses import dataclass, asdict
@@ -16,6 +7,9 @@ from typing import Optional, Callable
 from ..core.scanner import Scanner
 from ..core.config import Config
 from ..core.state import Finding
+from ..core.token_efficient import TokenEfficient
+from ..core.agent_engine import AttackPlan
+from ..core.payloads import Payloads
 
 
 @dataclass
@@ -30,8 +24,13 @@ class ScanResults:
     manual_targets: str
     output_dir: str
 
-    def to_json(self) -> str:
+    def to_json(self, compact: bool = False) -> str:
+        if compact:
+            return TokenEfficient.compact_json(asdict(self))
         return json.dumps(asdict(self), indent=2, default=str)
+
+    def to_one_line(self) -> str:
+        return TokenEfficient.one_line_summary_from_dict(self.summary)
 
     def critical_findings(self) -> list[dict]:
         return [f for f in self.findings if f.get("severity") == "critical"]
@@ -42,32 +41,38 @@ class ScanResults:
     def has_vulnerabilities(self) -> bool:
         return any(f.get("severity") in ("critical", "high") for f in self.findings)
 
+    def action_items(self) -> list[str]:
+        """Get pre-computed action items for the agent."""
+        return TokenEfficient.action_items_from_findings(self.findings)
+
 
 class HunterAgent:
     """Programmatic interface for AI agents to run scans.
     
+    Features:
+        - Token-efficient output (compact JSON, one-line summaries)
+        - Pre-built attack plans (no LLM calls for payloads)
+        - Pre-computed action items (agents just execute)
+        - Delta reports (only new findings)
+    
     Example:
         agent = HunterAgent()
         
-        # Simple scan
+        # Full scan
         results = agent.scan("example.com")
         
-        # Scan with options
-        results = agent.scan("example.com", threads=30, aggressive=True)
+        # Token-efficient output
+        print(results.to_json(compact=True))  # Minimal tokens
+        print(results.to_one_line())  # Single line
         
-        # Adaptive scan (engine decides what to run)
-        results = agent.scan("example.com", mode="adaptive")
+        # Get action items (pre-computed, no LLM needed)
+        for action in results.action_items():
+            print(action)  # "TEST sqli https://..."
         
-        # Specific phases
-        results = agent.scan("example.com", phases=["recon.subdomains", "vuln.nuclei"])
-        
-        # Resume
-        results = agent.resume("example.com_20260907_1234")
-        
-        # Access results
-        if results.has_vulnerabilities():
-            for f in results.critical_findings():
-                print(f"CRITICAL: {f['type']} at {f['url']}")
+        # Get attack plan (pre-built payloads)
+        plan = agent.get_attack_plan("example.com")
+        for step in plan:
+            print(step)  # Pre-computed attack step
     """
 
     def __init__(self, config: Config = None):
@@ -75,21 +80,8 @@ class HunterAgent:
 
     def scan(self, target: str, threads: int = None, aggressive: bool = None,
              phases: list[str] = None, skip: list[str] = None,
-             mode: str = "adaptive", output_dir: str = None) -> ScanResults:
-        """Run a scan and return results.
-        
-        Args:
-            target: Domain to scan
-            threads: Concurrency level
-            aggressive: Enable aggressive mode
-            phases: Specific phases to run
-            skip: Phases to skip
-            mode: "adaptive" (default) or "all"
-            output_dir: Custom output directory
-            
-        Returns:
-            ScanResults with findings and summary
-        """
+             output_dir: str = None) -> ScanResults:
+        """Run a scan and return results."""
         config = Config.from_dict(self.config.to_dict())
         if threads:
             config.threads = threads
@@ -103,11 +95,9 @@ class HunterAgent:
         state = scanner.scan(phases=phases)
         elapsed = time.time() - start
 
-        # Collect results
         summary = state.summary()
         findings = [asdict(f) for f in state.get_findings()]
 
-        # Read manual targets if available
         manual_path = scanner.output_dir / "post" / "prioritize" / "manual_targets.md"
         manual_targets = ""
         if manual_path.exists():
@@ -126,33 +116,45 @@ class HunterAgent:
             output_dir=str(scanner.output_dir)
         )
 
-    def resume(self, scan_id: str) -> ScanResults:
-        """Resume an interrupted scan."""
-        scanner = Scanner.resume_scan(scan_id)
-        start = time.time()
-        state = scanner.resume()
-        elapsed = time.time() - start
+    def get_attack_plan(self, target: str) -> list[dict]:
+        """Get pre-computed attack plan for a target.
+        
+        Returns list of attack steps with pre-built payloads.
+        Agents execute these directly — no LLM calls needed.
+        """
+        # Run recon first to discover surface
+        results = self.scan(target, phases=[
+            "recon.subdomains", "recon.dns", "recon.http_probe",
+            "recon.url_discovery", "recon.param_mining",
+            "intel.tech_detect", "intel.secrets"
+        ])
 
-        summary = state.summary()
-        findings = [asdict(f) for f in state.get_findings()]
-        state.close()
+        # Load state for attack planning
+        scanner = Scanner(target, output_dir=results.output_dir)
+        plan = AttackPlan(scanner.state, self.config)
+        attack_steps = plan.generate_plan()
+        scanner.state.close()
 
-        return ScanResults(
-            scan_id=scan_id,
-            target=summary.get("target", ""),
-            status="completed",
-            elapsed=elapsed,
-            summary=summary,
-            findings=findings,
-            manual_targets="",
-            output_dir=str(scanner.output_dir)
-        )
+        return attack_steps
+
+    def execute_attack(self, target: str, step: dict) -> dict:
+        """Execute a single attack step.
+        
+        Args:
+            target: Domain
+            step: Attack step from get_attack_plan()
+            
+        Returns:
+            Result dict with vulnerability status and evidence
+        """
+        scanner = Scanner(target)
+        plan = AttackPlan(scanner.state, self.config)
+        result = plan.execute_step(step)
+        scanner.state.close()
+        return result
 
     def quick_recon(self, target: str) -> dict:
-        """Quick recon-only scan (subdomains + live hosts + ports).
-        
-        Returns dict with subdomains, live_urls, ports.
-        """
+        """Quick recon-only scan."""
         results = self.scan(target, phases=[
             "recon.subdomains", "recon.dns", "recon.http_probe", "recon.ports"
         ])
@@ -164,10 +166,26 @@ class HunterAgent:
         }
 
     def vuln_scan(self, target: str) -> ScanResults:
-        """Quick vulnerability scan (assumes recon done, runs vuln phases)."""
+        """Quick vulnerability scan."""
         return self.scan(target, phases=[
             "recon.subdomains", "recon.dns", "recon.http_probe",
             "recon.url_discovery", "recon.param_mining",
             "vuln.nuclei", "vuln.sqli", "vuln.xss",
             "post.prioritize", "post.report"
         ])
+
+    def payloads(self, vuln_type: str = None) -> dict:
+        """Get pre-built payloads.
+        
+        Args:
+            vuln_type: sqli, xss, ssrf, ssti, redirect, lfi, cmdi, etc.
+                       None = return all types
+        """
+        if vuln_type:
+            return {vuln_type: Payloads.get(vuln_type)}
+        return {t: Payloads.get(t) for t in Payloads.all_types()}
+
+    def compact_summary(self, target: str) -> str:
+        """One-line summary for minimal token usage."""
+        results = self.scan(target)
+        return f"target={target} findings={len(results.findings)} critical={len(results.critical_findings())} high={len(results.high_findings())}"

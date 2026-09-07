@@ -202,3 +202,81 @@ def _post_webhook(url, summary, findings):
         )
     except Exception:
         pass
+
+
+@cli.command()
+@click.argument("target")
+@click.option("--json-out", is_flag=True, help="JSON output")
+def plan(target, json_out):
+    """Generate pre-computed attack plan for TARGET."""
+    from .agent.api import HunterAgent
+    
+    agent = HunterAgent()
+    click.echo(f"  [hunter] Generating attack plan for {target}...")
+    steps = agent.get_attack_plan(target)
+    
+    if json_out:
+        click.echo(json.dumps(steps, indent=2))
+    else:
+        click.echo(f"\n  Attack Plan: {len(steps)} steps\n")
+        for i, step in enumerate(steps[:30], 1):
+            sev = step.get('severity', '?')
+            icon = {'critical': '🔴', 'high': '🟠', 'medium': '🟡', 'low': '🟢'}.get(sev, '⚪')
+            click.echo(f"  {i:3d}. {icon} {step['action']:25s} {step['target'][:60]}")
+            if step.get('param'):
+                click.echo(f"       param={step['param']} payloads={len(step.get('payloads', []))}")
+        if len(steps) > 30:
+            click.echo(f"\n  ... and {len(steps) - 30} more steps")
+
+
+@cli.command()
+@click.argument("vuln_type", required=False)
+def payloads(vuln_type):
+    """Show pre-built attack payloads."""
+    from .core.payloads import Payloads
+    
+    if vuln_type:
+        items = Payloads.get(vuln_type)
+        if not items:
+            click.echo(f"  Unknown type: {vuln_type}")
+            click.echo(f"  Available: {', '.join(Payloads.all_types())}")
+            return
+        click.echo(f"\n  {vuln_type.upper()} Payloads ({len(items)}):\n")
+        for p in items:
+            click.echo(f"    {p}")
+    else:
+        click.echo("\n  Available payload types:\n")
+        for t in Payloads.all_types():
+            items = Payloads.get(t)
+            click.echo(f"    {t:12s} ({len(items)} payloads)")
+        click.echo("\n  Usage: hunter payloads sqli")
+
+
+@cli.command()
+@click.argument("target")
+@click.option("--compact", is_flag=True, help="Minimal token output")
+@click.option("--json-out", is_flag=True, help="JSON output")
+def agent(target, compact, json_out):
+    """Agent-optimized scan with minimal token output."""
+    from .agent.api import HunterAgent
+    from .core.token_efficient import TokenEfficient
+    
+    agent = HunterAgent()
+    results = agent.scan(target)
+    
+    if compact:
+        click.echo(results.to_one_line())
+    elif json_out:
+        click.echo(results.to_json(compact=True))
+    else:
+        # Show summary + action items
+        click.echo(f"\n  Target: {target}")
+        click.echo(f"  Findings: {len(results.findings)}")
+        click.echo(f"  Critical: {len(results.critical_findings())}")
+        click.echo(f"  High: {len(results.high_findings())}")
+        
+        actions = results.action_items()
+        if actions:
+            click.echo(f"\n  Action Items ({len(actions)}):\n")
+            for a in actions[:20]:
+                click.echo(f"    {a}")
